@@ -1,3 +1,17 @@
+# PathMask 2.8.0
+
+- **WebUI 中英双语**。标签行右端新增「中 / EN」语言开关：界面文案、开关说明、诊断结论、健康检查项、报告骨架、日志分页标签和三个弹窗（捐赠 / 历史诊断 / 路径说明）全部提供英文版本。首次进入按浏览器语言自动选择，手动切换后记住选择；切换语言只重渲染屏幕上已有内容，不重新读盘、不重建路径行，未保存的编辑不会丢失。英文标签比中文宽，因此英文下把标签和顶栏按钮字号各压一档，保证 360px 宽度下标签行与标题都不折行、不裁剪；中文界面与旧版完全一致。
+- **新增 Android 17 / 6.18 支持**。构建矩阵新增 `android17-6.18`，Release 资产同步提供该 KMI 的 `.ko` 与 `_pathmask-ksu.zip`（clang-r584948c / rust-1.91.1.p3 工具链）。Android 17 设备的 WebUI 更新清单 `update/android17-6.18.json` 随本版本指向 `v2.8.0`。
+- **DDK 工具链更新到 v7（20260828）**。全部 KMI 改用新版镜像；android16-6.12 的 kdir 重新构建，`CONFIG_RUST=y` 生效。
+- 内核模块代码无改动；已有 2.7.2 的设备更新后配置与行为不变。
+
+## English
+
+- **Bilingual WebUI (Simplified Chinese / English)**. A 中 / EN switch at the end of the tab row translates the interface copy, switch hints, diagnostic verdicts, health checks, report skeleton, log tabs and all three modals (donate / diagnostic history / path help). The first visit follows the browser language and a manual choice is remembered; switching only re-renders what is already on screen, so nothing is re-read from disk and unsaved edits survive. English labels are wider, so English lowers the tab and top-bar button font by one step to keep the tab row and the title on a single line at 360px; the Chinese UI is unchanged.
+- **Android 17 / 6.18 support**. The build matrix gained `android17-6.18`, and the release ships the matching `.ko` and `_pathmask-ksu.zip` (clang-r584948c / rust-1.91.1.p3 toolchain). Its KernelSU manifest, `update/android17-6.18.json`, now points at the `v2.8.0` assets.
+- **DDK toolchain updated to v7 (20260828)**; every KMI uses the new images, and the android16-6.12 kdir was rebuilt with `CONFIG_RUST=y` enabled.
+- No kernel module changes: devices already on 2.7.2 keep their configuration and behaviour after updating.
+
 # PathMask 2.7.2
 
 - **共享存储别名路径全覆盖**。Android 共享存储存在等价拼写(`/storage/emulated/0`、`/storage/self/primary`、`/sdcard`、`/mnt/sdcard`),此前字符串钩子只匹配配置时的字面拼写,检测方改用别名路径即可绕过隐藏。现在模块在加载时解析候选根,凡与规范根命中同一 (dev, ino) 对象的全部登记,存储根下的目标对所有拼写同等隐藏(读/写类钩子均生效);inode 级钩子本就按 inode 匹配,不受路径拼写影响。
