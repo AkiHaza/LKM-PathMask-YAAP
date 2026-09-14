@@ -109,12 +109,18 @@ h2 {
 	position: sticky;
 	top: 67px;
 	z-index: 18;
-	display: grid;
-	grid-template-columns: repeat(5, 1fr);
+	display: flex;
+	flex-wrap: wrap;
+	align-items: stretch;
 	gap: 6px;
 	padding: 8px 14px;
 	background: Canvas;
 	border-bottom: 1px solid color-mix(in srgb, CanvasText 10%, transparent);
+}
+
+.tab {
+	flex: 1 1 44px;
+	padding: 0 6px;
 }
 
 .tab,
@@ -127,6 +133,62 @@ h2 {
 	background: Highlight;
 	color: HighlightText;
 	border-color: Highlight;
+}
+
+/*
+ * Language switch. It lives at the end of the sticky tab row instead of
+ * the top bar: the top bar is already full (捐赠 / 刷新 / GitHub icon next
+ * to a nowrap h1), and a fourth control there pushes the title line past
+ * the viewport on a 360px-wide phone. The tab row has five two-glyph
+ * labels, so a ~58px pill fits on the same line; because the row is a
+ * wrapping flex container, large system font scaling moves the pill to a
+ * second line instead of clipping the tabs.
+ */
+.langSwitch {
+	display: grid;
+	grid-auto-flow: column;
+	flex: 0 0 auto;
+	border: 1px solid color-mix(in srgb, CanvasText 20%, transparent);
+	border-radius: 6px;
+	overflow: hidden;
+}
+
+.langOption {
+	min-width: 24px;
+	min-height: 38px;
+	padding: 0 5px;
+	border: 0;
+	border-radius: 0;
+	font-size: 13px;
+	color: color-mix(in srgb, CanvasText 68%, transparent);
+	background: transparent;
+}
+
+.langOption.active {
+	background: Highlight;
+	color: HighlightText;
+}
+
+/*
+ * English labels are wider than the two-glyph Chinese ones, so the
+ * language switch costs width that the rest of the shell has to give
+ * back: 13px tab labels with tighter padding keep five tabs plus the pill
+ * on one line at 360px, and the top-bar text buttons shrink so "Donate" /
+ * "Refresh" cannot run into the nowrap h1.
+ */
+html[lang="en"] .tab {
+	font-size: 12px;
+	padding: 0 4px;
+}
+
+html[lang="en"] .topbar {
+	gap: 8px;
+}
+
+html[lang="en"] .topTextButton {
+	min-width: 40px;
+	padding: 0 4px;
+	font-size: 12px;
 }
 
 main {

@@ -67,6 +67,8 @@ cat /sys/module/pathmask/parameters/deny_uids
 
 KernelSU 管理器里进入 PathMask 的 WebUI。
 
+界面支持中英双语：标签行右端有「中 / EN」开关，首次进入按浏览器语言自动选择，手动切换后会被记住；切换语言不会丢掉未保存的编辑。
+
 页面分为五个页：
 
 ```text

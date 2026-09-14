@@ -61,7 +61,9 @@ Implemented:
 - Stores runtime config under `/data/adb/pathmask`.
 - Migrates old `/data/adb/nohello` config on first PathMask boot.
 - Provides a KernelSU WebUI with config validation, health checks, paged logs,
-  one-click diagnostic report copying, hot reload, and temporary pause.
+  one-click diagnostic report copying, hot reload, and temporary pause. The UI
+  ships in Simplified Chinese and English; the 中 / EN switch sits at the end of
+  the tab row, and the choice is remembered.
 - Skips future automatic load attempts after repeated `insmod` failures until
   the user retries from WebUI or clears the failure guard.
 - Ships an optional companion module `procguard.ko` (WebUI "Protection" tab,
