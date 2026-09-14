@@ -21,6 +21,7 @@ android14-5.15_pathmask-ksu.zip
 android14-6.1_pathmask-ksu.zip
 android15-6.6_pathmask-ksu.zip
 android16-6.12_pathmask-ksu.zip
+android17-6.18_pathmask-ksu.zip
 ```
 
 如果你的设备是 Android 15 / 6.6，就下载：
@@ -207,6 +208,7 @@ update/android14-5.15.json
 update/android14-6.1.json
 update/android15-6.6.json
 update/android16-6.12.json
+update/android17-6.18.json
 ```
 
 GitHub Actions 打包时会自动给对应 zip 注入对应的 `updateJson`。例如：

@@ -93,6 +93,8 @@ android12-5.10_pathmask-ksu.zip
 ...
 android16-6.12_pathmask.ko
 android16-6.12_pathmask-ksu.zip
+android17-6.18_pathmask.ko
+android17-6.18_pathmask-ksu.zip
 ```
 
 Non-tag builds are uploaded to the `pathmask-latest` release. Tag builds are
