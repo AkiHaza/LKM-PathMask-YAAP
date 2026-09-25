@@ -87,7 +87,7 @@ Known limitations:
 
 ## GitHub Actions And Releases
 
-Pushing to `main`, pushing a `v*` tag, or running the workflow manually builds:
+The standard KMI workflow is manual (`workflow_dispatch`) and builds:
 
 ```text
 android12-5.10_pathmask.ko
