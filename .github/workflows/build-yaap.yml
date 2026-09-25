@@ -1,0 +1,361 @@
+name: Build PathMask for YAAP
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag, or auto for UTC date plus run number
+        required: false
+        default: auto
+        type: string
+      publish_release:
+        description: Publish the YAAP modules and KernelSU package to a release
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-pathmask-yaap-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  ARCH: arm64
+  KERNEL_REPO: https://github.com/AkiHaza/android_kernel_oneplus_sm8650.git
+  KERNEL_REF: seventeen
+  MODULES_REPO: https://github.com/AkiHaza/android_kernel_oneplus_sm8650-modules.git
+  MODULES_REF: seventeen
+  TOOLCHAIN_URL: https://github.com/AkiHaza/Floran-Kernel/releases/download/toolchain-r596125/linux-x86-refs_heads_android17-release-clang-r596125.tar.gz
+
+jobs:
+  build:
+    name: Build PathMask for YAAP seventeen
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout PathMask source
+        uses: actions/checkout@v6
+
+      - name: Setup swap space
+        uses: pierotofy/set-swap-space@master
+        with:
+          swap-size-gb: 16
+
+      - name: Install build dependencies
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison flex libdw-dev libelf-dev libncurses-dev libssl-dev pahole \
+            binutils cpio kmod lz4 rsync python3 git jq unzip xz-utils zip
+
+      - name: Download YAAP clang-r596125
+        run: |
+          set -euxo pipefail
+          mkdir -p "$RUNNER_TEMP/toolchain"
+          curl --fail --location --retry 5 --retry-all-errors \
+            "$TOOLCHAIN_URL" -o "$RUNNER_TEMP/clang.tar.gz"
+          tar -xzf "$RUNNER_TEMP/clang.tar.gz" -C "$RUNNER_TEMP/toolchain"
+          clang_bin="$(find "$RUNNER_TEMP/toolchain" -path '*/bin/clang' \
+            \( -type f -o -type l \) -print -quit)"
+          test -n "$clang_bin" -a -x "$clang_bin"
+          clang_dir="$(dirname "$clang_bin")"
+          echo "$clang_dir" >> "$GITHUB_PATH"
+          echo "CLANG_BIN=$clang_dir" >> "$GITHUB_ENV"
+          "$clang_bin" --version
+
+      - name: Resolve release metadata
+        id: metadata
+        env:
+          REQUESTED_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euxo pipefail
+          if [ -z "$REQUESTED_TAG" ] || [ "$REQUESTED_TAG" = auto ]; then
+            tag="$(date -u +%F)-${GITHUB_RUN_NUMBER}"
+          else
+            tag="$REQUESTED_TAG"
+          fi
+          case "$tag" in
+            *[!A-Za-z0-9._-]*)
+              echo "Invalid release tag: $tag" >&2
+              exit 1
+              ;;
+          esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Clone latest YAAP kernel and modules
+        env:
+          KERNEL_DIR: ${{ runner.temp }}/sm8650
+          MODULES_DIR: ${{ runner.temp }}/sm8650-modules
+        run: |
+          set -euxo pipefail
+          clone_latest() {
+            local repo="$1" ref="$2" dir="$3" expected_sha
+            expected_sha="$(git ls-remote --exit-code "$repo" \
+              "refs/heads/$ref" | awk 'NR == 1 { print $1 }')"
+            test -n "$expected_sha"
+            git clone --filter=blob:none --no-tags --depth=1 \
+              --single-branch --branch "$ref" "$repo" "$dir"
+            test "$(git -C "$dir" rev-parse HEAD)" = "$expected_sha"
+          }
+
+          clone_latest "$KERNEL_REPO" "$KERNEL_REF" "$KERNEL_DIR"
+          clone_latest "$MODULES_REPO" "$MODULES_REF" "$MODULES_DIR"
+
+          touchpanel_link="$KERNEL_DIR/drivers/base/touchpanel_notify"
+          test -L "$touchpanel_link"
+          test "$(readlink "$touchpanel_link")" = \
+            "../../../sm8650-modules/oplus/kernel/touchpanel/touchpanel_notify"
+          test -f "$touchpanel_link/Kconfig"
+          test -f "$touchpanel_link/Makefile"
+
+          kernel_commit="$(git -C "$KERNEL_DIR" rev-parse HEAD)"
+          modules_commit="$(git -C "$MODULES_DIR" rev-parse HEAD)"
+          {
+            echo "KERNEL_DIR=$KERNEL_DIR"
+            echo "MODULES_DIR=$MODULES_DIR"
+            echo "KERNEL_COMMIT=$kernel_commit"
+            echo "MODULES_COMMIT=$modules_commit"
+          } >> "$GITHUB_ENV"
+          {
+            echo "### YAAP source revisions"
+            echo "- kernel ($KERNEL_REF): \`$kernel_commit\`"
+            echo "- modules ($MODULES_REF): \`$modules_commit\`"
+            echo "- touchpanel source: \`$(readlink "$touchpanel_link")\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Prepare YAAP kernel configuration
+        run: |
+          set -euxo pipefail
+          export PATH="$CLANG_BIN:$PATH"
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+
+          path = Path(os.environ["KERNEL_DIR"]) / "certs/extract-cert.c"
+          text = path.read_text()
+          guarded_decl = """#ifdef USE_PKCS11_ENGINE
+          static const char *key_pass;
+          #endif"""
+          guarded_assignment = """#ifdef USE_PKCS11_ENGINE
+          \tkey_pass = getenv("KBUILD_SIGN_PIN");
+          #endif"""
+          declaration = "static const char *key_pass;"
+          assignment = '\tkey_pass = getenv("KBUILD_SIGN_PIN");'
+
+          if guarded_decl in text and guarded_assignment in text:
+              text = text.replace(guarded_decl, declaration, 1)
+              text = text.replace(guarded_assignment, assignment, 1)
+              path.write_text(text)
+          elif not (guarded_decl in text or guarded_assignment in text) \
+                  and declaration in text and assignment in text:
+              pass
+          else:
+              raise SystemExit("Unsupported extract-cert.c key_pass layout")
+          PY
+          echo 'Applied YAAP extract-cert key_pass compatibility fix.' \
+            >> "$GITHUB_STEP_SUMMARY"
+
+          mkdir -p "$RUNNER_TEMP/yaap-out"
+          make -C "$KERNEL_DIR" O="$RUNNER_TEMP/yaap-out" ARCH="$ARCH" \
+            LLVM=1 LLVM_IAS=1 gki_defconfig
+          KCONFIG_CONFIG="$RUNNER_TEMP/yaap-out/.config" \
+            "$KERNEL_DIR/scripts/kconfig/merge_config.sh" -m -r -y \
+            "$RUNNER_TEMP/yaap-out/.config" \
+            "$KERNEL_DIR/arch/arm64/configs/vendor/pineapple_GKI.config" \
+            "$KERNEL_DIR/arch/arm64/configs/vendor/oplus/pineapple_GKI.config"
+          make -C "$KERNEL_DIR" O="$RUNNER_TEMP/yaap-out" ARCH="$ARCH" \
+            LLVM=1 LLVM_IAS=1 olddefconfig
+
+          for symbol in KPROBES MODULES MODULE_UNLOAD KALLSYMS KALLSYMS_ALL MODVERSIONS; do
+            grep -q "^CONFIG_${symbol}=y$" \
+              "$RUNNER_TEMP/yaap-out/.config" || {
+                echo "CONFIG_${symbol}=y is required by PathMask" >&2
+                exit 1
+              }
+          done
+          if grep -q '^CONFIG_TRIM_UNUSED_KSYMS=y$' \
+              "$RUNNER_TEMP/yaap-out/.config"; then
+            echo 'CONFIG_TRIM_UNUSED_KSYMS=y can remove PathMask imports' >&2
+            exit 1
+          fi
+          if grep -q '^CONFIG_MODULE_SIG_FORCE=y$' \
+              "$RUNNER_TEMP/yaap-out/.config"; then
+            echo 'Unsigned external modules cannot load with CONFIG_MODULE_SIG_FORCE=y' \
+              >&2
+            exit 1
+          fi
+          if grep -q '^CONFIG_MODULE_SIG_ALL=y$' \
+              "$RUNNER_TEMP/yaap-out/.config"; then
+            echo 'CONFIG_MODULE_SIG_ALL=y signs modules with a CI-only key' >&2
+            echo 'Build with the device kernel signing key before distributing modules.' \
+              >&2
+            exit 1
+          fi
+          grep -E '^(CONFIG_(KPROBES|KALLSYMS|KALLSYMS_ALL|MODULES|MODULE_UNLOAD|MODVERSIONS|MODULE_SIG|MODULE_SIG_ALL|MODULE_SIG_FORCE|MODULE_SIG_PROTECT|TRIM_UNUSED_KSYMS|CFI_CLANG|LTO_CLANG_THIN|DEBUG_INFO_BTF))=' \
+            "$RUNNER_TEMP/yaap-out/.config" | tee "$RUNNER_TEMP/yaap-config.txt"
+
+      - name: Build YAAP kernel symbols
+        run: |
+          set -euxo pipefail
+          export PATH="$CLANG_BIN:$PATH"
+          make -C "$KERNEL_DIR" O="$RUNNER_TEMP/yaap-out" ARCH="$ARCH" \
+            LLVM=1 LLVM_IAS=1 -j"$(nproc)" Image modules
+          make -C "$KERNEL_DIR" O="$RUNNER_TEMP/yaap-out" ARCH="$ARCH" \
+            LLVM=1 LLVM_IAS=1 modules_prepare
+          test -s "$RUNNER_TEMP/yaap-out/Module.symvers"
+          test -s "$RUNNER_TEMP/yaap-out/vmlinux"
+          test -s "$RUNNER_TEMP/yaap-out/include/config/kernel.release"
+          test -s "$RUNNER_TEMP/yaap-out/include/config/auto.conf"
+          grep -q '^CONFIG_MODVERSIONS=y$' "$RUNNER_TEMP/yaap-out/.config"
+
+      - name: Build PathMask and procguard against YAAP
+        run: |
+          set -euxo pipefail
+          export PATH="$CLANG_BIN:$PATH"
+          unset KBUILD_MODPOST_WARN
+          rm -f "$GITHUB_WORKSPACE/kernel"/*.ko \
+            "$GITHUB_WORKSPACE/kernel"/*.o \
+            "$GITHUB_WORKSPACE/kernel"/.*.cmd
+          make -C "$KERNEL_DIR" O="$RUNNER_TEMP/yaap-out" ARCH="$ARCH" \
+            LLVM=1 LLVM_IAS=1 M="$GITHUB_WORKSPACE/kernel" \
+            src="$GITHUB_WORKSPACE/kernel" modules
+          test -s "$GITHUB_WORKSPACE/kernel/pathmask.ko"
+          test -s "$GITHUB_WORKSPACE/kernel/procguard.ko"
+
+      - name: Validate and package YAAP modules
+        env:
+          RELEASE_TAG: ${{ steps.metadata.outputs.tag }}
+        run: |
+          set -euxo pipefail
+          export PATH="$CLANG_BIN:$PATH"
+          package="$RUNNER_TEMP/package"
+          mkdir -p "$package"
+          cp "$GITHUB_WORKSPACE/kernel/pathmask.ko" \
+            "$package/yaap-seventeen_pathmask.ko"
+          cp "$GITHUB_WORKSPACE/kernel/procguard.ko" \
+            "$package/yaap-seventeen_procguard.ko"
+          kernel_release="$(cat "$RUNNER_TEMP/yaap-out/include/config/kernel.release")"
+
+          for ko in "$package"/*.ko; do
+            test -s "$ko"
+            machine="$(llvm-readelf -h "$ko" | awk -F: \
+              '/Machine:/ {gsub(/^[[:space:]]+/, "", $2); print $2}')"
+            test "$machine" = AArch64
+            vermagic="$(modinfo -F vermagic "$ko")"
+            case "$vermagic" in
+              "$kernel_release"*) ;;
+              *)
+                echo "vermagic mismatch for $ko: $vermagic (kernel $kernel_release)" >&2
+                exit 1
+                ;;
+            esac
+            case " $vermagic " in
+              *" modversions "*) ;;
+              *)
+                echo "missing modversions vermagic flag for $ko: $vermagic" >&2
+                exit 1
+                ;;
+            esac
+            versions_size="$(llvm-readelf -SW "$ko" | awk '
+              { for (i = 1; i <= NF; i++) {
+                  if ($i == "__versions") { print $(i + 4); exit }
+                }
+              }')"
+            test -n "$versions_size"
+            case "$versions_size" in
+              0|0000000000000000|00000000)
+                echo "empty __versions section in $ko" >&2
+                exit 1
+                ;;
+            esac
+            signer="$(modinfo -F signer "$ko" 2>/dev/null || true)"
+            if [ -n "$signer" ]; then
+              echo "unexpected module signature in $ko ($signer)" >&2
+              exit 1
+            fi
+            llvm-strip --strip-debug "$ko"
+
+            test -s "$ko"
+            post_strip_vermagic="$(modinfo -F vermagic "$ko")"
+            case "$post_strip_vermagic" in
+              "$kernel_release"*) ;;
+              *)
+                echo "vermagic changed after stripping $ko: $post_strip_vermagic" >&2
+                exit 1
+                ;;
+            esac
+            post_strip_versions="$(llvm-readelf -SW "$ko" | awk '
+              { for (i = 1; i <= NF; i++) {
+                  if ($i == "__versions") { print $(i + 4); exit }
+                }
+              }')"
+            test -n "$post_strip_versions"
+            case "$post_strip_versions" in
+              0|0000000000000000|00000000)
+                echo "empty __versions section after stripping $ko" >&2
+                exit 1
+                ;;
+            esac
+            modinfo "$ko" > "$ko.modinfo"
+            printf '%s: %s, __versions=%s, size=%s bytes\n' \
+              "$(basename "$ko")" "$post_strip_vermagic" "$post_strip_versions" \
+              "$(stat -c %s "$ko")" \
+              >> "$GITHUB_STEP_SUMMARY"
+          done
+
+          NO_UPDATE_JSON=1 \
+            PROCGUARD_KO="$package/yaap-seventeen_procguard.ko" \
+            sh "$GITHUB_WORKSPACE/tools/package_ksu.sh" \
+            "$package/yaap-seventeen_pathmask.ko" \
+            "$package/yaap-seventeen_pathmask-ksu.zip"
+          (cd "$package" && sha256sum ./*.ko ./*.zip > SHA256SUMS)
+          cp "$RUNNER_TEMP/yaap-config.txt" "$package/yaap-config.txt"
+          {
+            echo "YAAP PathMask build: $RELEASE_TAG"
+            echo "Kernel release: $kernel_release"
+            echo "Kernel ($KERNEL_REF): $KERNEL_COMMIT"
+            echo "Modules ($MODULES_REF): $MODULES_COMMIT"
+            echo "Toolchain: $TOOLCHAIN_URL"
+            echo
+            echo "The modules require a YAAP seventeen kernel built from the exact"
+            echo "kernel/module revisions above and retain a non-empty __versions section."
+          } > "$package/README.txt"
+          {
+            echo "PathMask modules built against YAAP seventeen."
+            echo
+            echo "- Kernel ($KERNEL_REF): $KERNEL_COMMIT"
+            echo "- Modules ($MODULES_REF): $MODULES_COMMIT"
+            echo "- Toolchain: $TOOLCHAIN_URL"
+            echo "- Kernel release: $kernel_release"
+            echo
+            echo "The raw modules and the KernelSU package require the matching"
+            echo "YAAP kernel/module revisions above."
+          } > "$RUNNER_TEMP/release-notes.md"
+          echo "PACKAGE_DIR=$package" >> "$GITHUB_ENV"
+          find "$package" -maxdepth 1 -type f -printf '%f\n' | sort
+          cat "$package/SHA256SUMS"
+
+      - name: Upload YAAP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pathmask-yaap-seventeen-${{ steps.metadata.outputs.tag }}
+          path: ${{ runner.temp }}/package
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish YAAP release
+        if: ${{ inputs.publish_release }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.metadata.outputs.tag }}
+          name: PathMask YAAP ${{ steps.metadata.outputs.tag }}
+          body_path: ${{ runner.temp }}/release-notes.md
+          files: |
+            ${{ runner.temp }}/package/*.ko
+            ${{ runner.temp }}/package/*-ksu.zip
+            ${{ runner.temp }}/package/SHA256SUMS
+          fail_on_unmatched_files: true

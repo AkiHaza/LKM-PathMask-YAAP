@@ -116,6 +116,21 @@ That JSON then points back to the matching `android15-6.6_pathmask-ksu.zip`
 asset on the current version release, so Manager updates do not cross-install
 the wrong KMI package. Version releases are also mirrored to `pathmask-latest`.
 
+### YAAP / OnePlus 12
+
+The manually dispatched `.github/workflows/build-yaap.yml` workflow builds
+`pathmask.ko` and `procguard.ko` against the current YAAP `seventeen` kernel
+and its matching `android_kernel_oneplus_sm8650-modules` repository. It uses
+YAAP's clang-r596125 toolchain, merges the two `pineapple_GKI` configurations,
+and builds the kernel far enough to produce the matching `Module.symvers`,
+`vmlinux`, and `kernel.release` files.
+
+The YAAP workflow deliberately keeps the kernel's normal external-module
+`modpost` and a non-empty `__versions` section. Do not use the empty
+`__versions`/kallsyms-relocation patch intended for a KernelSU LKM with these
+PathMask modules. The generated YAAP modules are only valid for the exact
+kernel and modules commits recorded in the artifact's `README.txt`.
+
 ## Local Build
 
 If your DDK container exports `KDIR`:
