@@ -15,6 +15,7 @@
 #include <linux/dcache.h>
 #include <linux/err.h>
 #include <linux/fs.h>
+#include <linux/file.h>
 #include <linux/namei.h>
 #include <linux/path.h>
 #include <linux/version.h>
@@ -336,14 +337,14 @@ static inline bool is_target_inode(const struct inode *inode)
 	return false;
 }
 
-static inline bool is_target_ino(__u64 ino)
+static inline bool is_target_ino(dev_t dev, __u64 ino)
 {
 	unsigned int i;
 
 	for (i = 0; i < target_count; i++) {
 		if (!targets[i].inode_ok)
 			continue;
-		if (ino == (__u64)targets[i].ino)
+		if (dev == targets[i].dev && ino == (__u64)targets[i].ino)
 			return true;
 	}
 
@@ -1379,6 +1380,7 @@ struct getdents_cb_data {
 	struct linux_dirent64 __user *dirent;
 	void *kbuf;
 	size_t kbuf_len;
+	dev_t dev;
 	bool scoped;
 };
 
@@ -1386,15 +1388,29 @@ static int getdents_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
 	struct getdents_cb_data *d = (struct getdents_cb_data *)ri->data;
 	struct pt_regs *user_regs = (struct pt_regs *)regs->regs[0];
+	struct file *file;
+	struct inode *inode;
 	unsigned int count;
 
 	d->dirent = NULL;
 	d->kbuf = NULL;
 	d->kbuf_len = 0;
+	d->dev = 0;
 	d->scoped = should_hide_for_current();
 
 	if (!d->scoped || !user_regs)
 		return 0;
+
+	file = fget((unsigned int)user_regs->regs[0]);
+	if (!file)
+		return 0;
+	inode = file_inode(file);
+	if (!inode || !inode->i_sb) {
+		fput(file);
+		return 0;
+	}
+	d->dev = inode->i_sb->s_dev;
+	fput(file);
 
 	count = (unsigned int)user_regs->regs[2];
 	d->dirent = (struct linux_dirent64 __user *)user_regs->regs[1];
@@ -1446,7 +1462,7 @@ static int getdents_exit(struct kretprobe_instance *ri, struct pt_regs *regs)
 		if (reclen < min_reclen || reclen > new_len - bpos)
 			break;
 
-		if (is_target_ino(cur->d_ino)) {
+		if (is_target_ino(d->dev, cur->d_ino)) {
 			modified = true;
 			if (prev) {
 				if ((unsigned int)prev->d_reclen + reclen <=

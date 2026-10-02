@@ -278,7 +278,9 @@ Scene debugfs 自动识别开关，默认 `0`（关闭）。开启后，启动�
 
 `/data/adb/pathmask/wait_seconds.conf`
 
-开机时等待隐藏路径出现、以及 deny / allow 模式下等待包名解析为 UID 的总秒数预算。默认 60。两个等待阶段共用同一个截止时间，所以最坏情况下只会延迟这么多，而不是这一项的两倍。路径或包名出现得慢的设备可以调大；也可以在 WebUI 的「开机等待秒数」里直接改。
+开机时等待隐藏路径出现、以及 deny / allow 模式下等待包名解析为 UID 的总秒数预算。默认 60。两个等待阶段共用同一个截止时间，合计最多等待这么多，而不是这一项的两倍。路径或包名出现得慢的设备可以调大；也可以在 WebUI 的「开机等待秒数」里直接改。
+
+隐藏分区 `etc/selinux` 下的文件（例如 `vendor_file_contexts`、`vendor_sepolicy.cil`、`system_ext_sepolicy.cil`），或者隐藏这些目录及其父目录时，还会独立等待 `sys.boot_completed=1`。如果 Android 仍在启动，最多等待 300 秒；启动完成后再留出 10 秒稳定时间。超时则跳过加载，避免 SELinux 上下文初始化时所需文件被提前隐藏。系统已完成启动时热重载会直接加载。白名单只豁免应用的正常 UID，WebView 等隔离服务使用独立 UID，不会自动继承这个豁免。
 
 `/data/adb/pathmask/procguard.conf`
 
@@ -290,7 +292,7 @@ Scene debugfs 自动识别开关，默认 `0`（关闭）。开启后，启动�
 
 `/data/adb/pathmask/boot_state`
 
-开机脚本运行到哪一阶段的状态文件，由 service.sh 自动写入：`init`、`waiting-targets`、`waiting-packages`、`loaded`、`already-loaded`、`paused`、`skipped-*`、`failed-*` 等。WebUI 健康检查会读它显示「正在等待，剩 X 秒」之类的进度，避免误以为没生效。手动改没意义，是观测用的。
+开机脚本运行到哪一阶段的状态文件，由 service.sh 自动写入：`init`、`waiting-targets`、`waiting-packages`、`waiting-android`、`loaded`、`already-loaded`、`paused`、`skipped-*`、`failed-*` 等。SELinux 路径等待 Android 启动完成时显示 `waiting-android`，等待超时后为 `skipped-android-boot`。WebUI 健康检查会读它显示「正在等待，剩 X 秒」之类的进度，避免误以为没生效。手动改没意义，是观测用的。
 
 ## 自己打包
 

@@ -77,7 +77,7 @@ const ALLOW_SYSTEM_UID_SET = new Set(DEFAULT_ALLOW_SYSTEM_UIDS);
 const DEFAULT_WAIT_SECONDS = 60;
 const DEFAULT_AUTO_SCENE_DEBUGFS = false;
 const BOOT_POLL_INTERVAL_MS = 5000;
-const BOOT_WAITING_STATES = new Set(["init", "waiting-targets", "waiting-packages"]);
+const BOOT_WAITING_STATES = new Set(["init", "waiting-targets", "waiting-packages", "waiting-android"]);
 const SCENE_BACKGROUND_STATES = new Set(["late-watching", "late-found-pending", "late-reload-retry"]);
 
 const files = {
@@ -617,6 +617,14 @@ const EN_TEXT = {
 	"等待已超时，模块可能已跳过加载。{0}":
 		"The wait timed out; the module may have skipped the load.{0}",
 	"正在等待包名解析为 UID": "Waiting for package names to resolve to UIDs",
+	"正在等待 Android 启动完成": "Waiting for Android to finish booting",
+	"配置包含 SELinux 路径，启动完成并稳定后才开始隐藏。最多还需等待 {0} 秒。":
+		"SELinux paths are configured. Hiding starts after Android finishes booting and settles. Up to {0} seconds remaining.",
+	"Android 启动等待超时，已跳过隐藏": "Android boot wait timed out; hiding was skipped",
+	"为避免影响 SELinux 上下文初始化，本次未加载模块。系统正常启动后可点击“保存并热重载”。":
+		"The module was left unloaded to avoid disrupting SELinux context initialization. Once Android is running normally, press Save & reload.",
+	"加载已取消；在 KernelSU 中启用模块后重启。":
+		"Loading was cancelled. Enable the module in KernelSU and reboot.",
 	"还需等待最多 {0} 秒，超时未解析到 UID 会跳过加载。{1}":
 		"Up to {0}s left; unresolvable UIDs are skipped when it expires.{1}",
 	"上次开机时模块已存在": "The module was already loaded at the last boot",
@@ -2327,6 +2335,16 @@ function computeVerdict(facts) {
 		};
 	}
 
+	if (facts.bootStateName === "skipped-android-boot") {
+		return {
+			level: FACT_WARN,
+			headline: t("Android 启动等待超时，已跳过隐藏"),
+			suggestions: [
+				t("为避免影响 SELinux 上下文初始化，本次未加载模块。系统正常启动后可点击“保存并热重载”。"),
+			],
+		};
+	}
+
 	if (facts.bootStateName === "skipped-targets-missing") {
 		return {
 			level: FACT_WARN,
@@ -3184,6 +3202,24 @@ function describeBootState(snapshot, moduleLoaded) {
 				body: remaining > 0
 					? t(`还需等待最多 {0} 秒，超时未解析到 UID 会跳过加载。{1}`, [remaining, detailSuffix])
 					: t(`等待已超时，模块可能已跳过加载。{0}`, [detailSuffix]),
+			};
+		case "waiting-android":
+			return {
+				level: "warn",
+				title: t("正在等待 Android 启动完成"),
+				body: t("配置包含 SELinux 路径，启动完成并稳定后才开始隐藏。最多还需等待 {0} 秒。", [remaining]),
+			};
+		case "skipped-android-boot":
+			return {
+				level: "warn",
+				title: t("Android 启动等待超时，已跳过隐藏"),
+				body: t("为避免影响 SELinux 上下文初始化，本次未加载模块。系统正常启动后可点击“保存并热重载”。"),
+			};
+		case "skipped-module-inactive":
+			return {
+				level: "warn",
+				title: t("模块被禁用（disable / remove flag）"),
+				body: t("加载已取消；在 KernelSU 中启用模块后重启。"),
 			};
 		case "loaded":
 			return null;

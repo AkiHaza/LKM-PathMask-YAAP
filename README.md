@@ -269,8 +269,9 @@ edits these files for you, but they can also be inspected manually:
 - `/data/adb/pathmask/wait_seconds.conf`: total budget the boot service spends
   waiting for configured target paths to appear and (in `deny` / `allow` mode)
   for package names to resolve to UIDs. Default 60 seconds. Both phases share the
-   same deadline, so the worst-case boot delay is bounded by this value, not by
-  twice it. The boot service writes its current phase to
+  same deadline, so these two waits together use at most this value, not
+  twice it. SELinux paths have an additional boot-completion wait described
+  below. The boot service writes its current phase to
   `/data/adb/pathmask/boot_state` so the WebUI can show whether the module is
   still waiting or has decided to skip loading.
 - `/data/adb/pathmask/write_op_policy.conf`: write-op errno policy for hidden
@@ -293,6 +294,18 @@ Normal boot loading keeps a 10-second settle delay before using the shared
 wait budget. WebUI hot reloads and Scene late-watcher reloads skip that
 boot-only delay because Android is already running; their existing five-second
 target/UID fallback budget remains unchanged.
+
+Targets inside a partition's `etc/selinux` directory, including
+`vendor_file_contexts`, `vendor_sepolicy.cil`, and `system_ext_sepolicy.cil`,
+and targets that hide those directories or their parents, wait for
+`sys.boot_completed=1` before loading. If Android is still booting, the service
+waits up to 300 seconds, then allows 10 seconds to settle after completion.
+If the wait times out, it skips loading to keep SELinux context files available
+during initialization. Hot reload after boot completes loads immediately.
+The WebUI shows `waiting-android` or `skipped-android-boot` for this wait.
+
+Allowlisting an app exempts its normal UID; isolated services such as WebView
+renderers use separate UIDs and do not inherit that exemption.
 
 ## WebUI Diagnosis
 

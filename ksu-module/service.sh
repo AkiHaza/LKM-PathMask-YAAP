@@ -51,6 +51,8 @@ SCENE_WATCH_STOP_PATH="$PERSIST_DIR/scene_debugfs_watch.stop"
 LEGACY_TARGET_WAIT_SECONDS_CONFIG="$PERSIST_DIR/target_wait_seconds.conf"
 LEGACY_PACKAGE_WAIT_SECONDS_CONFIG="$PERSIST_DIR/package_wait_seconds.conf"
 BOOT_STATE_PATH="$PERSIST_DIR/boot_state"
+BOOT_LOAD_OWNER_PATH="$PERSIST_DIR/boot_load_owner"
+BOOT_LOAD_OWNER_ENABLED=0
 
 TARGET_PATHS=""
 HIDE_DIRENTS=1
@@ -123,6 +125,7 @@ log_e() {
 }
 
 write_boot_state() {
+	boot_run_superseded && return 0
 	STATE="$1"
 	DETAIL="$2"
 	DEADLINE="$3"
@@ -1180,6 +1183,89 @@ wait_for_scope_packages() {
 	read_active_package_config 0
 }
 
+targets_hide_selinux_config() {
+	BOOT_TARGET_IFS="$IFS"
+	IFS=","
+	for BOOT_TARGET in $TARGET_PATHS; do
+		IFS="$BOOT_TARGET_IFS"
+		while [ "$BOOT_TARGET" != "/" ] && [ "${BOOT_TARGET%/}" != "$BOOT_TARGET" ]; do
+			BOOT_TARGET="${BOOT_TARGET%/}"
+		done
+		[ "$BOOT_TARGET" = "/" ] && return 0
+		for BOOT_POLICY_DIR in \
+			/etc/selinux /system/etc/selinux /system_ext/etc/selinux \
+			/vendor/etc/selinux /odm/etc/selinux /product/etc/selinux \
+			/system/system_ext/etc/selinux /system/vendor/etc/selinux \
+			/system/odm/etc/selinux /system/product/etc/selinux \
+			/system_root/system/etc/selinux /system_root/system_ext/etc/selinux \
+			/system_root/vendor/etc/selinux /system_root/odm/etc/selinux \
+			/system_root/product/etc/selinux /system_root/system/system_ext/etc/selinux \
+			/system_root/system/vendor/etc/selinux /system_root/system/odm/etc/selinux \
+			/system_root/system/product/etc/selinux; do
+			case "$BOOT_TARGET" in
+				"$BOOT_POLICY_DIR"|"$BOOT_POLICY_DIR"/*) return 0 ;;
+			esac
+			case "$BOOT_POLICY_DIR" in
+				"$BOOT_TARGET"/*) return 0 ;;
+			esac
+		done
+		IFS=","
+	done
+	IFS="$BOOT_TARGET_IFS"
+	return 1
+}
+
+boot_run_superseded() {
+	[ "$BOOT_LOAD_OWNER_ENABLED" = "1" ] || return 1
+	[ "$(cat "$BOOT_LOAD_OWNER_PATH" 2>/dev/null)" = "$$" ] && return 1
+	log_i "load cancelled by a newer service invocation"
+	return 0
+}
+
+boot_load_cancelled() {
+	boot_run_superseded && return 0
+	if [ -e "$SCENE_WATCH_STOP_PATH" ]; then
+		write_boot_state "paused" "load cancelled while waiting for Android" ""
+		log_i "Android boot wait cancelled by pause sentinel"
+		return 0
+	fi
+	if [ -e "$MODDIR/disable" ] || [ -e "$MODDIR/remove" ]; then
+		write_boot_state "skipped-module-inactive" "module disabled or marked for removal" ""
+		log_i "Android boot wait cancelled by module state"
+		return 0
+	fi
+	return 1
+}
+
+wait_for_android_boot() {
+	targets_hide_selinux_config || return 0
+	if boot_run_superseded || [ -e "$SCENE_WATCH_STOP_PATH" ]; then
+		return 1
+	fi
+	[ "$(getprop sys.boot_completed 2>/dev/null)" = "1" ] && return 0
+	boot_load_cancelled && return 1
+
+	ANDROID_BOOT_DEADLINE=$(( $(date +%s 2>/dev/null || echo 0) + 300 ))
+	write_boot_state "waiting-android" "SELinux targets require sys.boot_completed=1" "$ANDROID_BOOT_DEADLINE"
+	log_i "waiting for Android boot completion before hiding SELinux configuration"
+	while [ "$(getprop sys.boot_completed 2>/dev/null)" != "1" ]; do
+		boot_load_cancelled && return 1
+		ANDROID_BOOT_NOW="$(date +%s 2>/dev/null || echo 0)"
+		if [ "$ANDROID_BOOT_NOW" -ge "$ANDROID_BOOT_DEADLINE" ]; then
+			write_boot_state "skipped-android-boot" "sys.boot_completed did not become 1 within 300 seconds" ""
+			log_i "Android boot completion timed out; skip hiding SELinux configuration"
+			return 1
+		fi
+		sleep 1
+	done
+	boot_load_cancelled && return 1
+	ANDROID_BOOT_DEADLINE=$(( $(date +%s 2>/dev/null || echo 0) + 10 ))
+	write_boot_state "waiting-android" "Android boot completed; settling before hiding SELinux configuration" "$ANDROID_BOOT_DEADLINE"
+	sleep 10
+	boot_load_cancelled && return 1
+	return 0
+}
+
 init_persistent_config
 
 # Pause writes a stop sentinel before unloading so the background watcher
@@ -1192,6 +1278,9 @@ if [ "${PATHMASK_SCENE_WATCH_RELOAD:-0}" = "1" ] && [ -e "$SCENE_WATCH_STOP_PATH
 fi
 if [ "${PATHMASK_SCENE_WATCH_RELOAD:-0}" != "1" ]; then
 	rm -f "$SCENE_WATCH_STOP_PATH" 2>/dev/null || true
+fi
+if printf '%s\n' "$$" > "$BOOT_LOAD_OWNER_PATH" 2>/dev/null; then
+	BOOT_LOAD_OWNER_ENABLED=1
 fi
 write_boot_state "init" "" ""
 
@@ -1416,6 +1505,17 @@ if grep -q '^nohello ' /proc/modules 2>/dev/null; then
 	exit 0
 fi
 
+rebuild_target_paths
+if ! wait_for_android_boot; then
+	exit 0
+fi
+if grep -q '^pathmask ' /proc/modules 2>/dev/null; then
+	reset_load_failure_guard
+	log_i "pathmask was loaded while waiting for Android"
+	write_boot_state "already-loaded" "loaded during Android boot wait" ""
+	exit 0
+fi
+
 # UID resolution can consume the remainder of the shared wait deadline. Scan
 # one final time immediately before insmod to close the window where Scene
 # creates (or replaces) its randomized debugfs mount between target waiting
@@ -1429,6 +1529,10 @@ if ! any_target_exists; then
 fi
 if [ "$AUTO_SCENE_DEBUGFS" = "1" ] && [ "$SCENE_DEBUGFS_COUNT" -gt 0 ]; then
 	write_scene_debugfs_state "found" "0" "discovered $SCENE_DEBUGFS_COUNT matching mount(s) before insmod"
+fi
+
+if boot_run_superseded || [ -e "$SCENE_WATCH_STOP_PATH" ]; then
+	exit 0
 fi
 
 # procguard companion module: strips the gid 3009 (AID_READPROC) /proc
@@ -1446,6 +1550,9 @@ if [ -f "$PROC_GUARD_KO_PATH" ] && [ "$(head -n 1 "$PROC_GUARD_CONFIG" 2>/dev/nu
 	fi
 fi
 
+if boot_run_superseded || [ -e "$SCENE_WATCH_STOP_PATH" ]; then
+	exit 0
+fi
 if insmod "$KO_PATH" target_paths="$TARGET_PATHS" hide_dirents="$HIDE_DIRENTS" scope_mode="$SCOPE_MODE" deny_uids="$DENY_UIDS" enable_syscall_hooks="$ENABLE_SYSCALL_HOOKS" syscall_hooks="$SYSCALL_HOOKS" write_op_policy="$WRITE_OP_POLICY"; then
 	reset_load_failure_guard
 	log_i "loaded $KO_PATH target_paths=$TARGET_PATHS hide_dirents=$HIDE_DIRENTS scope_mode=$SCOPE_MODE deny_uids=$DENY_UIDS enable_syscall_hooks=$ENABLE_SYSCALL_HOOKS syscall_hooks=$SYSCALL_HOOKS write_op_policy=$WRITE_OP_POLICY"
